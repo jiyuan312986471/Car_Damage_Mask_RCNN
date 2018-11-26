@@ -9,16 +9,12 @@ Written by Yuan Ji
 import json
 import os
 import sys
-import math
-import random
-import cv2
 import numpy as np
 import skimage
-from PIL import Image
 from typing import Tuple
 
 # Root directory of the project
-ROOT_DIR = os.path.abspath("../../")
+ROOT_DIR = os.path.abspath("../")
 
 # Import Mask RCNN
 sys.path.append(ROOT_DIR)  # To find local version of the library
@@ -94,8 +90,8 @@ class CarDamageDataset(utils.Dataset):
             # Get the x, y coordinates of points of the polygons that make up
             # the outline of each object instance. There are stores in the
             # shape_attributes (see json format above)
-            # TODO: add region_attributes into polygons' info
-            polygons = [r['shape_attributes'] for r in a['regions'].values()]
+            polygons = [(r['shape_attributes'], r['region_attributes'])
+                        for r in a['regions'].values()]
 
             # load_mask() needs the image size to convert polygons to masks.
             # Unfortunately, VIA doesn't include it in JSON, so we must read
@@ -108,7 +104,7 @@ class CarDamageDataset(utils.Dataset):
                            width=width, height=height, polygons=polygons)
         return None
 
-    def load_mask(self, image_id: str) -> Tuple[np.ndarray, np.ndarray]:
+    def load_mask(self, image_id: int) -> Tuple[np.ndarray, np.ndarray]:
         """Generate instance masks for an image.
 
         Args:
@@ -118,6 +114,10 @@ class CarDamageDataset(utils.Dataset):
             masks: A bool array of shape [height, width, instance count] with
                 one mask per instance.
             class_ids: a 1D array of class IDs of the instance masks.
+
+        Notes:
+            To use this method, ``self.prepare()`` must be called before. Then
+            use elements from ``self.image_ids`` as parameter of this method.
         """
         # If not a car damage dataset image, delegate to parent class.
         image_info = self.image_info[image_id]
@@ -129,14 +129,26 @@ class CarDamageDataset(utils.Dataset):
         info = self.image_info[image_id]
         mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
                         dtype=np.uint8)
+
+        # 1D array of instances' class_ids
+        cls_ids = np.zeros([mask.shape[-1]], dtype=np.int32)
+
         for i, p in enumerate(info["polygons"]):
+            # get mask and class
+            m, cls = p[0], p[1]['cls']
+
             # Get indexes of pixels inside the polygon and set them to 1
-            rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
+            rr, cc = skimage.draw.polygon(m['all_points_y'], m['all_points_x'])
             mask[rr, cc, i] = 1
+
+            # set cls_ids by the classes of polygons
+            cls_id = [c_in for c_in in self.class_info if c_in['name'] == cls]
+            if len(cls_id) > 0:
+                cls_ids[i] = cls_id[0]['id']
 
         # Return mask, and array of class IDs of each instance. Since we have
         # one class ID only, we return an array of 1s
-        return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
+        return mask.astype(np.bool), cls_ids
 
     def image_reference(self, image_id: str) -> str:
         """Return the path of the image"""
