@@ -23,7 +23,6 @@ Usage: import the module (see Jupyter notebooks for examples), or run from
     python3 car_damage.py splash --weights=last --video=<URL or path to file>
 """
 
-import datetime
 import json
 import os
 import sys
@@ -305,9 +304,19 @@ def detect_and_color_splash(model: modellib.MaskRCNN, image_path: str=None,
     """
     assert image_path or video_path
 
+    # Get original file name
+    if image_path:
+        fname = os.path.basename(image_path)
+        fname = os.path.splitext(fname)[0]
+    elif video_path:
+        fname = os.path.basename(video_path)
+        fname = os.path.splitext(fname)[0]
+    else:
+        fname = ''
+    fname += '_splash'
+
     # Generate output path
-    path = os.path.abspath(out_dir) if out_dir else ''
-    path += "splash_{:%Y%m%dT%H%M%S}".format(datetime.datetime.now())
+    path = os.path.join(out_dir, fname)
 
     # Generate colors for classes
     colors = random_colors(len(CLS))
@@ -315,9 +324,9 @@ def detect_and_color_splash(model: modellib.MaskRCNN, image_path: str=None,
     # Image or video?
     if image_path:
         # Run model detection and generate the color splash effect
-        print("Running on {}".format(args.image))
+        print("Running on {}".format(image_path))
         # Read image
-        image = skimage.io.imread(args.image)
+        image = skimage.io.imread(image_path)
         # Detect objects
         r = model.detect([image], verbose=1)[0]
         # Color splash
@@ -483,6 +492,12 @@ if __name__ == '__main__':
     else:
         video_path = None
 
+    if args.dir_out is not None:
+        dir_out = args.dir_out if os.path.isabs(args.dir_out or '') \
+            else os.path.join(ROOT_DIR, args.dir_out)
+    else:
+        dir_out = None
+
     # Train or evaluate
     if args.command == "train":
         # train val split
@@ -492,6 +507,5 @@ if __name__ == '__main__':
         # train model
         train_model(dataset_dir, anno_path, model, train, val)
     else:  # splash
-        dir_out = args.dir_out
         detect_and_color_splash(model, image_path=img_path,
                                 video_path=video_path, out_dir=dir_out)
