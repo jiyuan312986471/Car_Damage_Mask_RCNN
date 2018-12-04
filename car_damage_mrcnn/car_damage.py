@@ -27,24 +27,29 @@ import datetime
 import json
 import os
 import sys
+import cv2 as cv
 import numpy as np
 import skimage
 from random import sample
 from typing import List
 from typing import Tuple
+from mrcnn import model as modellib
+from mrcnn import utils
+from mrcnn.config import Config
+from mrcnn.visualize import random_colors
+from car_damage_mrcnn.utils import color_splash
 
 # Directories
 ROOT_DIR = os.path.abspath("../")
-DATASET_DIR = os.path.join(ROOT_DIR, "dataset\\img")
-ANNO_PATH = os.path.join(ROOT_DIR, "dataset\\annotation\\all.json")
 
 # File prefixes
-PREFIXES = ['car', 'rayure', 'retro']
+PREFIXES = ['rayure', 'car', 'retro']
+
+# Classes
+CLS = ["rayure", "roue", "retro"]
 
 # Import Mask RCNN
 sys.path.append(ROOT_DIR)  # To find local version of the library
-from mrcnn.config import Config
-from mrcnn import model as modellib, utils
 
 # Path to trained weights file
 COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "models\\mask_rcnn_coco.h5")
@@ -96,28 +101,15 @@ class CarDamageDataset(utils.Dataset):
             fnames: file names of images to load
         """
         # Add classes
-        self.add_class("damage", 1, "rayure")
-        self.add_class("damage", 2, "roue")
-        self.add_class("damage", 3, "retro")
+        for i, cls in enumerate(CLS):
+            self.add_class("damage", i+1, cls)
 
         # Load annotations
-        # VGG Image Annotator saves each image in the form:
-        # { 'filename': 'xxx.jpg',
-        #   'regions': {
-        #       '0': {
-        #           'region_attributes': {},
-        #           'shape_attributes': {
-        #               'all_points_x': [...],
-        #               'all_points_y': [...],
-        #               'name': 'polygon'},
-        #           'region_attributes': {'cls': '...'}},
-        #       ... more regions ...
-        #   },
-        #   'size': 100202
-        # }
-        # We mostly care about the x and y coordinates of each region
         with open(anno_path) as f:
             annotations = json.load(f)
+        if type(annotations) == dict:
+            annotations = [anno for anno in annotations.values()]
+
         if fnames is not None:
             annotations = [d for d in annotations if d['filename'] in fnames]
 
@@ -269,25 +261,25 @@ def train_validation_split_all(
     return train, val
 
 
-def train_model(model: modellib.MaskRCNN, training_set: List[str],
-                validation_set: List[str]) -> None:
+def train_model(dataset_dir: str, anno_path: str, model: modellib.MaskRCNN,
+                training_set: List[str], validation_set: List[str]) -> None:
     """Train Mask-RCNN model
 
     Args:
+        dataset_dir: data set directory
+        anno_path: path of annotation file
         model: Mask RCNN model to train
         training_set: image file names in training set
         validation_set: image file names in validation set
     """
     # Training dataset.
     dataset_train = CarDamageDataset()
-    dataset_train.load_car_damage(args.dataset, args.annotation,
-                                  fnames=training_set)
+    dataset_train.load_car_damage(dataset_dir, anno_path, fnames=training_set)
     dataset_train.prepare()
 
     # Validation dataset
     dataset_val = CarDamageDataset()
-    dataset_val.load_car_damage(args.dataset, args.annotation,
-                                fnames=validation_set)
+    dataset_val.load_car_damage(dataset_dir, anno_path, fnames=validation_set)
     dataset_val.prepare()
 
     # Since we're using a very small dataset, and starting from
@@ -301,27 +293,24 @@ def train_model(model: modellib.MaskRCNN, training_set: List[str],
     return None
 
 
-def color_splash(image, mask):
-    """Apply color splash effect.
-    image: RGB image [height, width, 3]
-    mask: instance segmentation mask [height, width, instance count]
-    Returns result image.
+def detect_and_color_splash(model: modellib.MaskRCNN, image_path: str=None,
+                            video_path: str=None, out_dir: str=None) -> None:
+    """Detect objects in image/video and highlight them
+
+    Args:
+        model: trained model
+        image_path: path of image to be detected
+        video_path: path of video to be detected
+        out_dir: output directory
     """
-    # Make a grayscale copy of the image. The grayscale copy still
-    # has 3 RGB channels, though.
-    gray = skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 255
-    # We're treating all instances as one, so collapse the mask into one layer
-    mask = (np.sum(mask, -1, keepdims=True) >= 1)
-    # Copy color pixels from the original color image where mask is set
-    if mask.shape[0] > 0:
-        splash = np.where(mask, image, gray).astype(np.uint8)
-    else:
-        splash = gray
-    return splash
-
-
-def detect_and_color_splash(model, image_path=None, video_path=None):
     assert image_path or video_path
+
+    # Generate output path
+    path = os.path.abspath(out_dir) if out_dir else ''
+    path += "splash_{:%Y%m%dT%H%M%S}".format(datetime.datetime.now())
+
+    # Generate colors for classes
+    colors = random_colors(len(CLS))
 
     # Image or video?
     if image_path:
@@ -332,28 +321,31 @@ def detect_and_color_splash(model, image_path=None, video_path=None):
         # Detect objects
         r = model.detect([image], verbose=1)[0]
         # Color splash
-        splash = color_splash(image, r['masks'])
+        splash = color_splash(image, r['rois'], r['masks'], r['class_ids'], CLS,
+                              r['scores'], colors=colors)
         # Save output
-        file_name = "splash_{:%Y%m%dT%H%M%S}.png".format(datetime.datetime.now())
-        skimage.io.imsave(file_name, splash)
+        path += ".png"
+        skimage.io.imsave(path, splash)
+        print("Saved to", path)
     elif video_path:
-        import cv2
+        print('Splash video:', video_path)
         # Video capture
-        vcapture = cv2.VideoCapture(video_path)
-        width = int(vcapture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(vcapture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = vcapture.get(cv2.CAP_PROP_FPS)
+        vcapture = cv.VideoCapture(video_path)
+        width = int(vcapture.get(cv.CAP_PROP_FRAME_WIDTH))
+        height = int(vcapture.get(cv.CAP_PROP_FRAME_HEIGHT))
+        fps = vcapture.get(cv.CAP_PROP_FPS)
+        print('Video size: ({}, {})'.format(width, height))
+        print('FPS:', fps)
 
         # Define codec and create video writer
-        file_name = "splash_{:%Y%m%dT%H%M%S}.avi".format(datetime.datetime.now())
-        vwriter = cv2.VideoWriter(file_name,
-                                  cv2.VideoWriter_fourcc(*'MJPG'),
-                                  fps, (width, height))
+        path += ".avi"
+        vwriter = cv.VideoWriter(path, cv.VideoWriter_fourcc(*'MJPG'), fps,
+                                 (width, height))
 
         count = 0
         success = True
         while success:
-            print("frame: ", count)
+            print("frame:", count)
             # Read next image
             success, image = vcapture.read()
             if success:
@@ -362,14 +354,17 @@ def detect_and_color_splash(model, image_path=None, video_path=None):
                 # Detect objects
                 r = model.detect([image], verbose=0)[0]
                 # Color splash
-                splash = color_splash(image, r['masks'])
+                splash = color_splash(image, r['rois'], r['masks'],
+                                      r['class_ids'], CLS, r['scores'],
+                                      colors=colors)
                 # RGB -> BGR to save image to video
                 splash = splash[..., ::-1]
                 # Add image to video writer
                 vwriter.write(splash)
                 count += 1
         vwriter.release()
-    print("Saved to ", file_name)
+        print("Saved to", path)
+    return None
 
 
 if __name__ == '__main__':
@@ -378,22 +373,18 @@ if __name__ == '__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(
         description='Train Mask R-CNN to detect custom class.')
-    parser.add_argument("command",
-                        metavar="<command>",
+    parser.add_argument("command", metavar="<command>",
                         help="'train' or 'splash'")
     parser.add_argument('--dataset', required=False,
-                        default=DATASET_DIR,
                         metavar="/path/to/custom/dataset/",
-                        help='Directory of the custom dataset')
+                        help='Directory of the dataset')
     parser.add_argument('--annotation', required=False,
-                        default=ANNO_PATH,
                         metavar="/path/to/annotaion/file.json",
                         help='Path of the annotation file')
     parser.add_argument('--weights', required=True,
                         metavar="/path/to/weights.h5",
                         help="Path to weights .h5 file, or 'coco'")
-    parser.add_argument('--logs', required=False,
-                        default=DEFAULT_LOGS_DIR,
+    parser.add_argument('--logs', required=False, default=DEFAULT_LOGS_DIR,
                         metavar="/path/to/logs/",
                         help='Logs and checkpoints directory (default=logs/)')
     parser.add_argument('--image', required=False,
@@ -402,11 +393,19 @@ if __name__ == '__main__':
     parser.add_argument('--video', required=False,
                         metavar="path or URL to video",
                         help='Video to apply the color splash effect on')
+    parser.add_argument('--dir-out', required=False,
+                        metavar="/path/to/output/dir/",
+                        help='Directory to save splashed image/video')
     args = parser.parse_args()
 
     # Validate arguments
-    if args.command == "splash":
-        assert args.image or args.video,\
+    assert args.command in ["train", "splash"], \
+        "'{}' is not recognized. Use 'train' or 'splash'".format(args.command)
+    if args.command == "train":
+        assert args.dataset and args.annotation, \
+            "Argument --dataset and --annotation is required for training"
+    else:  # splash
+        assert args.image or args.video, \
                "Provide --image or --video to apply color splash"
 
     print("Weights: ", args.weights)
@@ -439,14 +438,14 @@ if __name__ == '__main__':
         # Download weights file
         if not os.path.exists(weights_path):
             utils.download_trained_weights(weights_path)
-    elif args.weights.lower() == "last":
-        # Find last trained weights
-        weights_path = model.find_last()[1]
     elif args.weights.lower() == "imagenet":
         # Start from ImageNet trained weights
         weights_path = model.get_imagenet_weights()
     else:
-        weights_path = args.weights
+        if os.path.isabs(args.weights):
+            weights_path = args.weights
+        else:
+            weights_path = os.path.join(ROOT_DIR, args.weights)
 
     # Load weights
     print("Loading weights ", weights_path)
@@ -459,17 +458,40 @@ if __name__ == '__main__':
     else:
         model.load_weights(weights_path, by_name=True)
 
-    # Train validation split
-    imgs = os.listdir(DATASET_DIR)
-    train, val = train_validation_split_all(imgs, train_size=0.8,
-                                            prefixes=PREFIXES)
+    # Assume absolute paths
+    if args.dataset is not None:
+        dataset_dir = args.dataset if os.path.isabs(args.dataset or '') \
+            else os.path.join(ROOT_DIR, args.dataset)
+    else:
+        dataset_dir = None
+
+    if args.annotation is not None:
+        anno_path = args.annotation if os.path.isabs(args.annotation or '') \
+            else os.path.join(ROOT_DIR, args.annotation)
+    else:
+        anno_path = None
+
+    if args.image is not None:
+        img_path = args.image if os.path.isabs(args.image or '') \
+            else os.path.join(ROOT_DIR, args.image)
+    else:
+        img_path = None
+
+    if args.video is not None:
+        video_path = args.video if os.path.isabs(args.video or '') \
+            else os.path.join(ROOT_DIR, args.video)
+    else:
+        video_path = None
 
     # Train or evaluate
     if args.command == "train":
-        train_model(model, train, val)
-    elif args.command == "splash":
-        detect_and_color_splash(model, image_path=args.image,
-                                video_path=args.video)
-    else:
-        print("'{}' is not recognized. "
-              "Use 'train' or 'splash'".format(args.command))
+        # train val split
+        imgs = os.listdir(dataset_dir)
+        train, val = train_validation_split_all(imgs, train_size=0.8,
+                                                prefixes=PREFIXES)
+        # train model
+        train_model(dataset_dir, anno_path, model, train, val)
+    else:  # splash
+        dir_out = args.dir_out
+        detect_and_color_splash(model, image_path=img_path,
+                                video_path=video_path, out_dir=dir_out)
