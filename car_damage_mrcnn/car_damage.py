@@ -29,6 +29,7 @@ import sys
 import cv2 as cv
 import numpy as np
 import skimage
+import tensorflow as tf
 from random import sample
 from typing import List
 from typing import Tuple
@@ -192,7 +193,7 @@ def train_validation_split_subset(
     """Split a subset of images files into train and validation set
 
     Args:
-        dataset_imgs: list of image file names
+        dataset_imgs: image file names
         train_size: size or proportion of training set. If ``float``, should be
             between 0.0(exclude) and 1.0(include). If ``int``, should be between
             0(exclude) and ``len(dataset_imgs)``(include).
@@ -405,6 +406,8 @@ if __name__ == '__main__':
     parser.add_argument('--dir-out', required=False,
                         metavar="/path/to/output/dir/",
                         help='Directory to save splashed image/video')
+    parser.add_argument('--gpu', required=False, default=False,
+                        action='store_true', help='Whether to use GPU')
     args = parser.parse_args()
 
     # Validate arguments
@@ -435,11 +438,21 @@ if __name__ == '__main__':
 
     # Create model
     if args.command == "train":
-        model = modellib.MaskRCNN(mode="training", config=config,
-                                  model_dir=args.logs)
+        if args.gpu:
+            with tf.device("/gpu:0"):
+                model = modellib.MaskRCNN(mode="training", config=config,
+                                          model_dir=args.logs)
+        else:
+            model = modellib.MaskRCNN(mode="training", config=config,
+                                      model_dir=args.logs)
     else:
-        model = modellib.MaskRCNN(mode="inference", config=config,
-                                  model_dir=args.logs)
+        if args.gpu:
+            with tf.device("/gpu:0"):
+                model = modellib.MaskRCNN(mode="inference", config=config,
+                                          model_dir=args.logs)
+        else:
+            model = modellib.MaskRCNN(mode="inference", config=config,
+                                      model_dir=args.logs)
 
     # Select weights file to load
     if args.weights.lower() == "coco":
