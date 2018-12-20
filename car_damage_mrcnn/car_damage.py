@@ -437,22 +437,14 @@ if __name__ == '__main__':
     config.display()
 
     # Create model
-    if args.command == "train":
-        if args.gpu:
-            with tf.device("/gpu:0"):
-                model = modellib.MaskRCNN(mode="training", config=config,
-                                          model_dir=args.logs)
-        else:
-            model = modellib.MaskRCNN(mode="training", config=config,
+    mode = 'training' if args.command == 'train' else 'inference'
+    if args.gpu:
+        with tf.device("/gpu:0"):
+            model = modellib.MaskRCNN(mode=mode, config=config,
                                       model_dir=args.logs)
     else:
-        if args.gpu:
-            with tf.device("/gpu:0"):
-                model = modellib.MaskRCNN(mode="inference", config=config,
-                                          model_dir=args.logs)
-        else:
-            model = modellib.MaskRCNN(mode="inference", config=config,
-                                      model_dir=args.logs)
+        model = modellib.MaskRCNN(mode=mode, config=config,
+                                  model_dir=args.logs)
 
     # Select weights file to load
     if args.weights.lower() == "coco":
